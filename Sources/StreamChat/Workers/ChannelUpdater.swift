@@ -55,6 +55,8 @@ class ChannelUpdater: Worker {
 
         let completion: (Result<ChannelPayload, Error>) -> Void = { [weak database] result in
             do {
+                print("StreamChat.ChannelUpdater.update: Completed update channel request...")
+
                 if let pagination = channelQuery.pagination {
                     self.paginationStateHandler.end(pagination: pagination, with: result.map(\.messages))
                 }
@@ -63,7 +65,13 @@ class ChannelUpdater: Worker {
 
                 onChannelCreated?(payload.channel.cid)
 
-                database?.write { session in
+                guard let database = database else {
+                    print("StreamChat.ChannelUpdater.update: database was found to be nil in completion...")
+                    completion?(.failure(ClientError.Unexpected("nil database")))
+                    return
+                }
+
+                database.write { session in
                     if let channelDTO = session.channel(cid: payload.channel.cid) {
                         channelDTO.cleanMessagesThatFailedToBeEditedDueToModeration()
                         if didJumpToMessage || didLoadFirstPage {
@@ -77,12 +85,16 @@ class ChannelUpdater: Worker {
 
                 } completion: { error in
                     if let error = error {
+                        print("StreamChat.ChannelUpdater.update: database write errored...")
                         completion?(.failure(error))
                         return
                     }
+
+                    print("StreamChat.ChannelUpdater.update: database write succeeded...")
                     completion?(.success(payload))
                 }
             } catch {
+                print("StreamChat.ChannelUpdater.update: completion errored...")
                 completion?(.failure(error))
             }
         }
@@ -93,6 +105,7 @@ class ChannelUpdater: Worker {
         if isInRecoveryMode {
             apiClient.recoveryRequest(endpoint: endpoint, completion: completion)
         } else {
+            print("StreamChat.ChannelUpdater.update: Requesting update channel...")
             apiClient.request(endpoint: endpoint, completion: completion)
         }
     }

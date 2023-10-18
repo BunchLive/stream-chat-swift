@@ -1254,6 +1254,14 @@ public enum MessageOrdering {
 
 private extension ChatChannelController {
     func synchronize(isInRecoveryMode: Bool, _ completion: ((_ error: Error?) -> Void)? = nil) {
+        /// Setup observers if we know the channel `cid` (if it's missing, it'll be set in `set(cid:)`
+        /// Otherwise they will be set up after channel creation, in `set(cid:)`.
+        if let cid = cid {
+            print("StreamChat.ChatChannelController.synchronize: Received cid \(cid), setting up observers...")
+            setupEventObservers(for: cid)
+            setLocalStateBasedOnError(startDatabaseObservers())
+        }
+
         let channelCreatedCallback = isChannelAlreadyCreated ? nil : channelCreated(forwardErrorTo: setLocalStateBasedOnError)
         updater.update(
             channelQuery: channelQuery,
@@ -1270,13 +1278,6 @@ private extension ChatChannelController {
                 }
             }
         )
-
-        /// Setup observers if we know the channel `cid` (if it's missing, it'll be set in `set(cid:)`
-        /// Otherwise they will be set up after channel creation, in `set(cid:)`.
-        if let cid = cid {
-            setupEventObservers(for: cid)
-            setLocalStateBasedOnError(startDatabaseObservers())
-        }
     }
 
     /// Sets new cid of the query if necessary, and resets event and database observers.
