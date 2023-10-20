@@ -207,6 +207,40 @@ public class ChatChannelController: DataController, DelegateCallable, DataStoreP
         client.trackChannelController(self)
     }
 
+    /// Sets new cid of the query if necessary, and resets event and database observers.
+    ///
+    /// This should only be called when the controller is initialized with a new channel
+    /// (which doesn't exist on backend), and after that channel is created on backend.
+    /// If the newly created channel has a different cid than initially thought
+    /// (such is the case for direct messages - backend generates custom cid),
+    /// this function will set the new cid and reset observers.
+    /// - Parameter cid: New cid for the channel
+    /// - Returns: Error if it occurs while setting up database observers.
+    public func set(cid: ChannelId, completion: @escaping (Error?) -> Void) {
+        channelQuery = ChannelQuery(cid: cid, channelQuery: channelQuery)
+        setupEventObservers(for: cid)
+
+        let error = startDatabaseObservers()
+        guard error == nil else { return completion(error) }
+
+        // If there's a channel already in the database, we must
+        // simulate the existing data callbacks.
+        // Otherwise, the changes will be reported when DB write is completed.
+
+        // The reason is, when we don't have the cid, the initial fetches return empty/nil entities
+        // and only following updates are reported, hence initial values are ignored.
+        guard let channel = channel else { return completion(ClientError.Unexpected("nil channel")) }
+        delegateCallback {
+            $0.channelController(self, didUpdateChannel: .create(channel))
+            $0.channelController(
+                self,
+                didUpdateMessages: self.messages.enumerated()
+                    .map { ListChange.insert($1, index: IndexPath(item: $0, section: 0)) }
+            )
+            completion(nil)
+        }
+    }
+
     override public func synchronize(_ completion: ((_ error: Error?) -> Void)? = nil) {
         synchronize(isInRecoveryMode: false, completion)
     }
@@ -1270,50 +1304,6 @@ private extension ChatChannelController {
                 }
             }
         )
-
-        /// Setup observers if we know the channel `cid` (if it's missing, it'll be set in `set(cid:)`
-        /// Otherwise they will be set up after channel creation, in `set(cid:)`.
-        if let cid = cid {
-            setupEventObservers(for: cid)
-            setLocalStateBasedOnError(startDatabaseObservers())
-        }
-    }
-
-    /// Sets new cid of the query if necessary, and resets event and database observers.
-    ///
-    /// This should only be called when the controller is initialized with a new channel
-    /// (which doesn't exist on backend), and after that channel is created on backend.
-    /// If the newly created channel has a different cid than initially thought
-    /// (such is the case for direct messages - backend generates custom cid),
-    /// this function will set the new cid and reset observers.
-    /// If the cid is not changed, this function will not do anything.
-    /// - Parameter cid: New cid for the channel
-    /// - Returns: Error if it occurs while setting up database observers.
-    private func set(cid: ChannelId) -> Error? {
-        guard self.cid != cid else { return nil }
-
-        channelQuery = ChannelQuery(cid: cid, channelQuery: channelQuery)
-        setupEventObservers(for: cid)
-
-        let error = startDatabaseObservers()
-        guard error == nil else { return error }
-
-        // If there's a channel already in the database, we must
-        // simulate the existing data callbacks.
-        // Otherwise, the changes will be reported when DB write is completed.
-
-        // The reason is, when we don't have the cid, the initial fetches return empty/nil entities
-        // and only following updates are reported, hence initial values are ignored.
-        guard let channel = channel else { return nil }
-        delegateCallback {
-            $0.channelController(self, didUpdateChannel: .create(channel))
-            $0.channelController(
-                self,
-                didUpdateMessages: self.messages.enumerated()
-                    .map { ListChange.insert($1, index: IndexPath(item: $0, section: 0)) }
-            )
-        }
-        return nil
     }
 
     private func startDatabaseObservers() -> Error? {
@@ -1470,7 +1460,9 @@ private extension ChatChannelController {
         return { [weak self] cid in
             guard let self = self else { return }
             self.isChannelAlreadyCreated = true
-            completion?(self.set(cid: cid))
+            self.set(cid: cid) {
+                completion?($0)
+            }
         }
     }
 

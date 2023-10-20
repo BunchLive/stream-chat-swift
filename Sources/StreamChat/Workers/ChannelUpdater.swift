@@ -55,6 +55,8 @@ class ChannelUpdater: Worker {
 
         let completion: (Result<ChannelPayload, Error>) -> Void = { [weak database] result in
             do {
+                log.debug("Completed update channel request...")
+
                 if let pagination = channelQuery.pagination {
                     self.paginationStateHandler.end(pagination: pagination, with: result.map(\.messages))
                 }
@@ -63,7 +65,13 @@ class ChannelUpdater: Worker {
 
                 onChannelCreated?(payload.channel.cid)
 
-                database?.write { session in
+                guard let database = database else {
+                    log.error("database was found to be nil in completion...")
+                    completion?(.failure(ClientError.Unexpected("nil database")))
+                    return
+                }
+
+                database.write { session in
                     if let channelDTO = session.channel(cid: payload.channel.cid) {
                         channelDTO.cleanMessagesThatFailedToBeEditedDueToModeration()
                         if didJumpToMessage || didLoadFirstPage {
@@ -77,12 +85,16 @@ class ChannelUpdater: Worker {
 
                 } completion: { error in
                     if let error = error {
+                        log.error("database write errored: \(error)")
                         completion?(.failure(error))
                         return
                     }
+
+                    log.debug("database write succeeded...")
                     completion?(.success(payload))
                 }
             } catch {
+                log.error("completion errored: \(error)")
                 completion?(.failure(error))
             }
         }
@@ -93,6 +105,7 @@ class ChannelUpdater: Worker {
         if isInRecoveryMode {
             apiClient.recoveryRequest(endpoint: endpoint, completion: completion)
         } else {
+            log.debug("Requesting update channel...")
             apiClient.request(endpoint: endpoint, completion: completion)
         }
     }
