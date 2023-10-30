@@ -198,7 +198,7 @@ public class ChatChannelController: DataController, DelegateCallable, DataStoreP
             client.databaseContainer,
             client.apiClient
         )
-        
+
         super.init()
 
         setChannelObserver()
@@ -1208,7 +1208,7 @@ public class ChatChannelController: DataController, DelegateCallable, DataStoreP
             }
         }
     }
-    
+
     /// Deletes a file associated with the given URL in the channel.
     /// - Parameters:
     ///   - url: The URL of the file to be deleted.
@@ -1219,10 +1219,10 @@ public class ChatChannelController: DataController, DelegateCallable, DataStoreP
             channelModificationFailed(completion)
             return
         }
-        
+
         updater.deleteFile(in: cid, url: url, completion: completion)
     }
-    
+
     /// Deletes an image associated with the given URL in the channel.
     /// - Parameters:
     ///   - url: The URL of the image to be deleted.
@@ -1233,7 +1233,7 @@ public class ChatChannelController: DataController, DelegateCallable, DataStoreP
             channelModificationFailed(completion)
             return
         }
-        
+
         updater.deleteImage(in: cid, url: url, completion: completion)
     }
 
@@ -1288,11 +1288,27 @@ public enum MessageOrdering {
 
 private extension ChatChannelController {
     func synchronize(isInRecoveryMode: Bool, _ completion: ((_ error: Error?) -> Void)? = nil) {
-        let channelCreatedCallback = isChannelAlreadyCreated ? nil : channelCreated(forwardErrorTo: setLocalStateBasedOnError)
+        typealias OnChannelCreated = ((ChannelId, @escaping (_ error: Error?) -> Void) -> Void)?
+
+        /// This callback is called after channel is created on backend but before channel is saved to DB. When channel is created
+        /// we receive backend generated cid and setting up current `ChannelController` to observe this channel DB changes.
+        /// Completion will be called if DB fetch will fail after setting new `ChannelQuery`.
+        let onChannelCreated: OnChannelCreated = isChannelAlreadyCreated ? nil : { [weak self] cid, completion in
+            self?.isChannelAlreadyCreated = true
+
+            self?.set(cid: cid) { error in
+                if let error = error {
+                    self?.setLocalStateBasedOnError(error)
+                }
+
+                return completion(error)
+            }
+        }
+
         updater.update(
             channelQuery: channelQuery,
             isInRecoveryMode: isInRecoveryMode,
-            onChannelCreated: channelCreatedCallback,
+            onChannelCreated: onChannelCreated,
             completion: { result in
                 switch result {
                 case .success:
@@ -1450,19 +1466,6 @@ private extension ChatChannelController {
         log.error(error.localizedDescription)
         callback {
             completion?(error)
-        }
-    }
-
-    /// This callback is called after channel is created on backend but before channel is saved to DB. When channel is created
-    /// we receive backend generated cid and setting up current `ChannelController` to observe this channel DB changes.
-    /// Completion will be called if DB fetch will fail after setting new `ChannelQuery`.
-    private func channelCreated(forwardErrorTo completion: ((_ error: Error?) -> Void)?) -> ((ChannelId) -> Void) {
-        return { [weak self] cid in
-            guard let self = self else { return }
-            self.isChannelAlreadyCreated = true
-            self.set(cid: cid) {
-                completion?($0)
-            }
         }
     }
 

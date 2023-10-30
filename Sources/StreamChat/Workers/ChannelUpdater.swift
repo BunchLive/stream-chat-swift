@@ -42,13 +42,13 @@ class ChannelUpdater: Worker {
     func update(
         channelQuery: ChannelQuery,
         isInRecoveryMode: Bool,
-        onChannelCreated: ((ChannelId) -> Void)? = nil,
+        onChannelCreated: ((ChannelId, @escaping (_ error: Error?) -> Void) -> Void)? = nil,
         completion: ((Result<ChannelPayload, Error>) -> Void)? = nil
     ) {
         if let pagination = channelQuery.pagination {
             paginationStateHandler.begin(pagination: pagination)
         }
-        
+
         let didLoadFirstPage = channelQuery.pagination?.parameter == nil
         let didJumpToMessage: Bool = channelQuery.pagination?.parameter?.isJumpingToMessage == true
         let isChannelCreate = onChannelCreated != nil
@@ -63,35 +63,52 @@ class ChannelUpdater: Worker {
 
                 let payload = try result.get()
 
-                onChannelCreated?(payload.channel.cid)
-
-                guard let database = database else {
-                    log.error("database was found to be nil in completion...")
-                    completion?(.failure(ClientError.Unexpected("nil database")))
-                    return
-                }
-
-                database.write { session in
-                    if let channelDTO = session.channel(cid: payload.channel.cid) {
-                        channelDTO.cleanMessagesThatFailedToBeEditedDueToModeration()
-                        if didJumpToMessage || didLoadFirstPage {
-                            channelDTO.cleanAllMessagesExcludingLocalOnly()
-                        }
-                    }
-
-                    let updatedChannel = try session.saveChannel(payload: payload)
-                    updatedChannel.oldestMessageAt = self.paginationState.oldestMessageAt?.bridgeDate
-                    updatedChannel.newestMessageAt = self.paginationState.newestMessageAt?.bridgeDate
-
-                } completion: { error in
-                    if let error = error {
-                        log.error("database write errored: \(error)")
-                        completion?(.failure(error))
+                let databaseWrite = {
+                    guard let database = database else {
+                        log.error("database was found to be nil in completion...")
+                        completion?(.failure(ClientError.Unexpected("nil database")))
                         return
                     }
 
-                    log.debug("database write succeeded...")
-                    completion?(.success(payload))
+                    database.write { session in
+                        if let channelDTO = session.channel(cid: payload.channel.cid) {
+                            channelDTO.cleanMessagesThatFailedToBeEditedDueToModeration()
+                            if didJumpToMessage || didLoadFirstPage {
+                                channelDTO.cleanAllMessagesExcludingLocalOnly()
+                            }
+                        }
+
+                        let updatedChannel = try session.saveChannel(payload: payload)
+                        updatedChannel.oldestMessageAt = self.paginationState.oldestMessageAt?.bridgeDate
+                        updatedChannel.newestMessageAt = self.paginationState.newestMessageAt?.bridgeDate
+
+                    } completion: { error in
+                        if let error = error {
+                            log.error("database write errored: \(error)")
+                            completion?(.failure(error))
+                            return
+                        }
+
+                        log.debug("database write succeeded...")
+                        completion?(.success(payload))
+                    }
+                }
+
+                if let onChannelCreated = onChannelCreated {
+                    log.debug("channel wasn't already created, calling onChannelCreated...")
+                    onChannelCreated(payload.channel.cid) { error in
+                        if let error = error {
+                            log.error("onChannelCreated errored: \(error)")
+                            completion?(.failure(error))
+                            return
+                        }
+
+                        log.debug("onChannelCreated fired successfully, writing to database...")
+                        databaseWrite()
+                    }
+                } else {
+                    log.debug("channel was already created, writing to database...")
+                    databaseWrite()
                 }
             } catch {
                 log.error("completion errored: \(error)")
@@ -621,21 +638,21 @@ class ChannelUpdater: Worker {
     func createCall(in cid: ChannelId, callId: String, type: String, completion: @escaping (Result<CallWithToken, Error>) -> Void) {
         callRepository.createCall(in: cid, callId: callId, type: type, completion: completion)
     }
-    
+
     func deleteFile(in cid: ChannelId, url: String, completion: ((Error?) -> Void)? = nil) {
         apiClient.request(endpoint: .deleteFile(cid: cid, url: url), completion: {
             completion?($0.error)
         })
     }
-    
+
     func deleteImage(in cid: ChannelId, url: String, completion: ((Error?) -> Void)? = nil) {
         apiClient.request(endpoint: .deleteImage(cid: cid, url: url), completion: {
             completion?($0.error)
         })
     }
-    
+
     // MARK: - private
-    
+
     private func messagePayload(text: String?, currentUserId: UserId?) -> MessageRequestBody? {
         var messagePayload: MessageRequestBody?
         if let text = text, let currentUserId = currentUserId {
